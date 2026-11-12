@@ -153,16 +153,49 @@ extraEnvVars: {}
   # CUSTOM_ENV_VAR: "custom_value"
   # ANOTHER_ENV_VAR: "another_value"
 
-# Configure the Kubernetes Service Object for the Omada Controller. It is recommended to use
-# a LoadBalancer or ClusterIP service type with an Ingress controller.
+# Configure the Kubernetes Services for the Omada Controller. By default the chart
+# renders ONE merged Service — identical ports/labels to 1.7.x — so a direct
+# LoadBalancer install keeps a single IP. It only splits into two Services when you
+# explicitly opt in, i.e. when:
+#   - service.web.type and service.device.type resolve to different types (an empty
+#     per-Service type falls back to the top-level service.type), or
+#   - any of service.web.labels/annotations or service.device.labels/annotations is set
+# When split:
+#   - the Web GUI Service (named after the release fullname) carries the management
+#     portal and captive portal ports — ideal behind an Ingress/HTTPRoute
+#   - the Device Service (named "<fullname>-device") carries every device-facing
+#     TCP/UDP port (adoption, management, discovery, upgrades, transfer, rtty, monitoring)
+# The top-level type/labels/annotations are legacy fallbacks that apply to a Service
+# when the corresponding web./device. value is empty.
 service:
-  # It is recommended to use a LoadBalancer service type with an Ingress controller
+  # Legacy fallback service type, inherited by any Service with an empty type
   type: LoadBalancer
-  # Extra labels to add to the Service
+  # Extra labels to add (merged into the single Service when unsplit; applied to
+  # both Services when split — per-Service subsections win on conflicts)
   labels: {}
-  # Extra annotations to add to the Service
+  # Extra annotations to add (same merge semantics as labels)
   annotations: {}
     # metallb.io/loadBalancerIPs: 192.168.1.20
+    # metallb.io/allow-shared-ip: omada  # MetalLB <0.13: metallb.universe.tf/allow-shared-ip
+  web:
+    # Web GUI (management + captive portal HTTP/HTTPS). Empty type (the default)
+    # inherits the top-level service.type, so with both web and device types unset
+    # the chart renders the legacy single Service. Set service.web.type different
+    # from service.device.type (e.g. ClusterIP for the GUI behind an Ingress/HTTPRoute
+    # while the device Service stays LoadBalancer/NodePort) to enable the split.
+    type: ""
+    labels: {}
+    annotations: {}
+  device:
+    # All other TCP/UDP ports (adoption, management, discovery, upgrades). Empty type
+    # falls back to the top-level service.type. As long as the effective web and device
+    # types match and no per-Service labels/annotations are set, the ports stay in the
+    # single merged Service. MetalLB users who want a split with BOTH Services as
+    # LoadBalancer can keep one shared IP via the metallb.io/allow-shared-ip annotation
+    # (see README).
+    type: ""
+    labels: {}
+    annotations: {}
 
 # Configure Ingress for the Omada Controller service. Requires an Ingress controller within the cluster.
 # By default, this ingress controller will terminate TLS and forward traffic to the Omada Controller,

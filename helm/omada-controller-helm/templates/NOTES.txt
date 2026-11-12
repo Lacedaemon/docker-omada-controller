@@ -1,19 +1,50 @@
-Omada Controller Deployed successfully. See below for the application URL.
-
+{{- $split := eq (include "omada-controller.servicesSplit" .) "true" -}}
+{{- $webType := .Values.service.web.type | default .Values.service.type -}}
+{{- $deviceType := .Values.service.device.type | default .Values.service.type -}}
+{{- $deviceName := include "omada-controller.fullnameWithSuffix" (dict "fullname" (include "omada-controller.fullname" .) "suffix" "-device") -}}
+{{- if $split }}
+Omada Controller deployed successfully. This chart creates two Services:
+  - Web GUI Service: {{ include "omada-controller.fullname" . }} ({{ $webType }}) — management portal and captive portal ports
+  - Device Service:  {{ $deviceName }} ({{ $deviceType }}) — adoption, management, discovery and upgrade ports
+{{- else }}
+Omada Controller deployed successfully as a single Service:
+  - Service: {{ include "omada-controller.fullname" . }} ({{ $webType }}) — Web GUI and device ports all share one Service
+    (set different service.web.type / service.device.type values, or per-Service
+    labels/annotations, to split into a Web GUI Service and a separate "-device" Service)
+{{- end }}
 {{- if .Values.ingress.enabled }}
 {{- range $host := .Values.ingress.managementHosts }}
   {{- range .paths }}
   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
   {{- end }}
 {{- end }}
-{{- else if contains "LoadBalancer" .Values.service.type }}
-     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-           You can watch its status by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "omada-controller.fullname" . }}'
-  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "omada-controller.fullname" . }} -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
-  echo https://$SERVICE_IP:{{ .Values.config.ports.manageHttps }}
-{{- else if contains "ClusterIP" .Values.service.type }}
+{{- end }}
+{{- if $split }}
+{{- if contains "LoadBalancer" $deviceType }}
+     NOTE: It may take a few minutes for the LoadBalancer IP of the device Service to be available.
+           You can watch its status by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ $deviceName }}'
+  export DEVICE_SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ $deviceName }} -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
+  echo "Omada devices reach the controller on $DEVICE_SERVICE_IP (TCP {{ .Values.config.ports.adoptV1 }}/{{ .Values.config.ports.managerV1 }}/{{ .Values.config.ports.managerV2 }}, UDP {{ .Values.config.ports.appDiscovery }}/{{ .Values.config.ports.discovery }}/{{ .Values.config.ports.udpManagement }})"
+{{- end }}
+{{- if contains "LoadBalancer" $webType }}
+  export WEB_SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "omada-controller.fullname" . }} -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
+  echo "Management portal: https://$WEB_SERVICE_IP:{{ .Values.config.ports.manageHttps }}"
+{{- else }}
   export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "omada-controller.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
   export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
   echo "https://127.0.0.1:{{ .Values.config.ports.manageHttps }}"
   kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.config.ports.manageHttps }}:$CONTAINER_PORT
+{{- end }}
+{{- else }}
+{{- if contains "LoadBalancer" $webType }}
+     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+           You can watch its status by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "omada-controller.fullname" . }}'
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "omada-controller.fullname" . }} -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
+  echo "Omada Controller (GUI + device ports): https://$SERVICE_IP:{{ .Values.config.ports.manageHttps }}"
+{{- else }}
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "omada-controller.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
+  echo "https://127.0.0.1:{{ .Values.config.ports.manageHttps }}"
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.config.ports.manageHttps }}:$CONTAINER_PORT
+{{- end }}
 {{- end }}

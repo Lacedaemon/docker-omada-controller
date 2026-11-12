@@ -14,6 +14,7 @@ The Helm chart releases do not correspond to the controller version so below is 
 
 | Controller Version | Chart Version | Change Notes |
 | ------------------ | ------------- | :------------ |
+| `6.3.0.111`        | `1.8.0`       | Services stay a **single merged Service** unless the split is explicitly opted into: with the default values (or whenever `service.web.type` and `service.device.type` resolve to the same type) the chart renders the same single Service as 1.7.x — byte-identical ports, labels and selector, one LoadBalancer IP — so direct-IP installs keep working for devices. The split into a **Web GUI Service** (keeps the release fullname, so existing Ingress/HTTPRoute backends need no change) and a new **`<fullname>-device` Service** (adoption/management/discovery/upgrade/transfer/rtty/monitoring ports) engages only when the effective web and device Service types **differ**, or when per-Service `labels`/`annotations` are set. New `service.web.*` / `service.device.*` values keep the legacy `service.*` keys as fallbacks. **Non-breaking:** upgrading from 1.7.x with only `service.type`/`labels`/`annotations` set renders exactly the old single Service. See the [Service Configuration](#service-configuration) section. |
 | `6.3.0.111`        | `1.7.0`       | Add ability to customize pod- and container-level `securityContext`; user values are merged over the `config.rootless` defaults |
 | `6.3.0.111`        | `1.6.0`       | Support 6.4 (beta): `upgradeHttps` now defaults to empty so the image picks the version-appropriate upgrade port (8043 for < 6.4, `upgradeEsHttps` for >= 6.4); probes use `/api/info` as `/login` returns 404 in 6.4 |
 | `6.3.0.111`        | `1.5.5`       | Fix duplicate port when `upgradeEsHttps` equals a non-default `upgradeHttps`; fix type error when overriding ports with `--set`; document `upgradeEsHttps` and the 8044/TCP and 19810/UDP ports; use `manageHttps` in port-forward notes |
@@ -123,11 +124,56 @@ The following table lists the configurable parameters of the Omada Controller ch
 
 ### Service Configuration
 
+By default the chart renders **one merged Service** carrying the Web GUI ports
+and all device-facing ports, exactly as it did in 1.7.x — one LoadBalancer IP,
+no change needed for direct-IP installs. It splits into two Services — the
+**Web GUI Service** (named after the release fullname, carrying `manage-https`,
+`manage-http`, `portal-https` and, when it differs from `manageHttp`,
+`portal-http`) and the **Device Service** (`<fullname>-device`, carrying the
+upgrade, adoption, management, discovery, transfer, rtty and monitoring ports)
+— only when you explicitly opt in. The split triggers iff **either**:
+
+1. the effective web and device Service types differ (`service.web.type` /
+   `service.device.type`; an empty value falls back to `service.type`), **or**
+2. any of `service.web.labels`, `service.web.annotations`, `service.device.labels`
+   or `service.device.annotations` is non-empty.
+
+The legacy top-level keys are still honored as fallbacks: a Service with an
+empty `type` inherits `service.type`, and its labels/annotations are the
+top-level ones merged with the subsection's (the subsection wins on key
+conflicts). The full effective rule lives in the `omada-controller.servicesSplit`
+helper, shared by `templates/service.yaml` and `templates/NOTES.txt`.
+
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `service.type` | Kubernetes service type | `LoadBalancer` |
-| `service.labels` | Additional service labels | `{}` |
-| `service.annotations` | Additional service annotations | `{}` |
+| `service.type` | Legacy service type inherited by any Service whose `web`/`device` type is empty | `LoadBalancer` |
+| `service.labels` | Additional labels for both Services (merged with the subsection labels) | `{}` |
+| `service.annotations` | Additional annotations for both Services (merged with the subsection annotations) | `{}` |
+| `service.web.type` | Service type for the Web GUI Service; empty (the default) inherits `service.type` — the GUI only gets its own Service once this differs from `service.device.type` | `""` (→ `LoadBalancer`) |
+| `service.web.labels` | Additional labels for the Web GUI Service (setting them triggers the split) | `{}` |
+| `service.web.annotations` | Additional annotations for the Web GUI Service (setting them triggers the split) | `{}` |
+| `service.device.type` | Service type for the Device Service; empty falls back to `service.type` | `""` (→ `LoadBalancer`) |
+| `service.device.labels` | Additional labels for the Device Service (setting them triggers the split) | `{}` |
+| `service.device.annotations` | Additional annotations for the Device Service (setting them triggers the split) | `{}` |
+
+> [!NOTE]
+> **MetalLB users who want the split with *both* Services as LoadBalancer:** MetalLB
+> would assign two separate IPs, breaking direct-IP device connectivity. Keep a
+> single shared IP by adding an allow-shared-ip annotation, e.g.
+>
+> ```yaml
+> service:
+>   annotations:
+>     metallb.io/allow-shared-ip: omada   # MetalLB < 0.13: metallb.universe.tf/allow-shared-ip
+>   web:
+>     type: LoadBalancer
+>   device:
+>     type: LoadBalancer
+> ```
+>
+> Top-level `service.annotations` apply to both Services, which is enough for
+> MetalLB to reuse one IP; the two port sets are disjoint, so sharing is
+> conflict-free.
 
 ### Ingress Configuration
 
@@ -205,9 +251,17 @@ podSecurityContext:
 
 ```yaml
 service:
+  # Both Services inherit this type by default (web/device types are empty), so
+  # the management GUI keeps the same direct LoadBalancer access as in 1.7.0.
   type: LoadBalancer
   annotations:
     metallb.io/loadBalancerIPs: 192.168.1.20
+  web:
+    # Optional explicit override; without it the web Service inherits service.type.
+    type: LoadBalancer
+  device:
+    # Device-facing ports (adoption, management, discovery, upgrades)
+    type: LoadBalancer
 
 persistence:
   data:
@@ -220,7 +274,14 @@ persistence:
 
 ```yaml
 service:
-  type: ClusterIP
+  # Example of the opt-in split (not the default): set the Web GUI Service to
+  # ClusterIP so the Ingress can reach it; ingress.yaml still points at the
+  # release fullname, so it needs no changes.
+  web:
+    type: ClusterIP
+  # Devices need direct reachability to the adoption/management/discovery ports.
+  device:
+    type: LoadBalancer
 
 ingress:
   enabled: true
